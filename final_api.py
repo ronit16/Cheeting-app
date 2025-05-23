@@ -1,8 +1,9 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import io
 import os
+import uuid
 
 import uvicorn
 from google.cloud import vision
@@ -12,16 +13,13 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# === Setup ===
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = '/OCR/cheating-app-460706-2c650aed4e38.json'
-
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = './cheating-app-460706-2c650aed4e38.json'
 genai.configure(api_key=API_KEY)
 
 app = FastAPI()
 
-# === CORS ===
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,22 +28,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === Prompt Templates ===
 extract_mcq_template = ChatPromptTemplate.from_messages([
     ("system", """
-        You are an AI assistant that extracts multiple-choice questions from raw OCR text.
-
-        For each MCQ, extract the question and up to four options (A, B, C, D).
-
-        Always return in this strict format:
-
-        Question: <question text>
-        Options:
-        A. <Option A>
-        B. <Option B>
-        C. <Option C>
-        D. <Option D>
-
+        You are an AI assistant that extracts questions from raw OCR text.
         Now extract from the following text:
     """),
     ("human", "{question_text}")
@@ -53,25 +38,27 @@ extract_mcq_template = ChatPromptTemplate.from_messages([
 
 answer_mcq_template = ChatPromptTemplate.from_messages([
     ("system", """
-        You are an AI assistant that answers multiple-choice questions.
+You are a highly knowledgeable and precise AI tutor trained to assist learners with academic questions across all levels, from basic to highly advanced (e.g., IIT-level).
 
-        Given a question and its options, return ONLY the correct answer text (not the option letter like A, B, C, or D).  
-        Do not include any explanations, labels, or option letters.  
+- You will receive a question that may or may not include answer choices (MCQ format).
+- If answer choices are present, **analyze all options carefully** and return only the **full text of the correct option** — do not return the option letter (A, B, etc.), only the full content of the correct answer.
+- If no options are given, provide a **concise yet complete answer** to the question.
+- Focus on clarity, correctness, and educational value.
+- Avoid unnecessary explanation unless the question explicitly asks for it.
+- Do not fabricate options or assume missing ones.
 
-        Just return the full text of the correct option.
-    """),
+Respond with only the correct answer.
+"""),
     ("human", "{mcq_text}")
 ])
 
-# === Model & Parser ===
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-preview-04-17", google_api_key=API_KEY)
 parser = StrOutputParser()
 
-# === Unified Endpoint ===
-@app.post("/process_ocr_question/")
-async def process_ocr_and_answer(file: UploadFile = File(...)):
+# === Endpoint 1: Upload Image and OCR ===
+@app.post("/upload_image/")
+async def upload_image(file: UploadFile = File(...)):
     try:
-        # OCR Part
         contents = await file.read()
         client = vision.ImageAnnotatorClient()
         image = vision.Image(content=contents)
@@ -81,20 +68,31 @@ async def process_ocr_and_answer(file: UploadFile = File(...)):
 
         texts = response.text_annotations
         extracted_text = texts[0].description if texts else ""
+        return {"ocr_text": extracted_text}
 
-        # MCQ Extraction
-        extract_chain = extract_mcq_template | llm | parser
-        extracted_mcq = extract_chain.invoke({"question_text": extracted_text})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        # MCQ Answering
+
+# # === Endpoint 2: Extract MCQ from OCR Text ===
+# @app.post("/extract_mcq/")
+# async def extract_mcq(ocr_text: str = Form(...)):
+#     try:
+#         extract_chain = extract_mcq_template | llm | parser
+#         extracted_mcq = extract_chain.invoke({"question_text": ocr_text})
+#         return {"question": extracted_mcq}
+
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+
+
+# === Endpoint 3: Answer MCQ ===
+@app.post("/answer_mcq/")
+async def answer_mcq(mcq_text: str = Form(...)):
+    try:
         answer_chain = answer_mcq_template | llm | parser
-        final_answer = answer_chain.invoke({"mcq_text": extracted_mcq})
-
-        return {
-            "ocr_text": extracted_text,
-            "question": extracted_mcq,
-            "answer": final_answer
-        }
+        final_answer = answer_chain.invoke({"mcq_text": mcq_text})
+        return {"answer": final_answer}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
