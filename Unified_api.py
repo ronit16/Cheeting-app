@@ -33,7 +33,7 @@ app.add_middleware(
 # === Prompt Templates ===
 extract_mcq_template = ChatPromptTemplate.from_messages([
     ("system", """
-        You are an AI assistant that extracts questions from raw OCR text.
+        You are an AI assistant that extracts questions and options if any available from raw OCR text.
         Now extract from the following text:
     """),
     ("human", "{question_text}")
